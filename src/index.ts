@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 
 interface Env {
-  GOOGLE_CLOUD_VISION_API_KEY: string;
   OPENAI_API_KEY: string;
 }
 
@@ -19,9 +18,8 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-app.post('/describe-image', async (c) => {
+app.post('/image-to-serch-songs', async (c) => {
   const currentTime = Date.now();
-  const googleApiKey = c.env.GOOGLE_CLOUD_VISION_API_KEY;
   const openAiKey = c.env.OPENAI_API_KEY;
 
   // Check for the last request time
@@ -42,47 +40,97 @@ app.post('/describe-image', async (c) => {
   const arrayBuffer = await file.arrayBuffer();
   const imageBase64 = arrayBufferToBase64(arrayBuffer);
 
-  const visionResponse = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${googleApiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      requests: [
-        {
-          image: { content: imageBase64 },
-          features: [{ type: 'LABEL_DETECTION' }, { type: 'TEXT_DETECTION' }],
-        },
-      ],
-    }),
-  });
-
-  const visionData = await visionResponse.json();
-  console.log('Google Vision API response:', visionData);
-
-  if (!visionResponse.ok) {
-    return c.json({ error: 'Google Vision API リクエストが失敗しました', details: visionData }, visionResponse.status);
-  }
-
-  if (!visionData.responses || !visionData.responses.length) {
-    return c.json({ error: 'Google Vision API から有効なレスポンスが返されませんでした', details: visionData }, 500);
-  }
-
-  const description = visionData.responses[0]?.labelAnnotations?.map((label: any) => label.description).join(', ') || 'No description available';
-  console.log('Image description:', description);
-
   const chatGptResponse = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${openAiKey}`,
     },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [{ role: 'user', content: `「${description}」に合う歌詞の無い曲を3曲教えてください。json形式で曲名のみ返してください。` }],
-    }),
+    body: JSON.stringify(
+      {
+        model: "gpt-4o",
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: "text",
+                text: "添付した画像に合う、歌詞の無い演奏のみの曲を3曲教えてください。\
+                        ただし、見つからない場合は必ず3曲教えなくても大丈夫ですが、最低1曲は必ず教えてください。\
+                        また、教える際はjson形式で曲名のみ返してください。\
+                        jsonは次の形式にしてください。\
+                        \"song_list\" : [\
+                          \"song1_name\",\
+                          \"song2_name\",\
+                          \"song3_name\",\
+                        ]\,\
+                        \"reason\" : \"これらの曲を選んだ理由。\"\
+                      "
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:image/jpeg;base64,${imageBase64}`,
+                }
+              }
+            ],
+          }
+        ],
+      }),
   });
 
   const chatData: any = await chatGptResponse.json();
   return c.json({ "message": chatData.choices[0].message.content });
+});
+
+app.post('/question', async (c) => {
+  const currentTime = Date.now();
+  const openAiKey = c.env.OPENAI_API_KEY;
+
+  // Check for the last request time to enforce a 10-second cooldown
+  if (lastRequestTime && (currentTime - lastRequestTime) < 10000) {
+    return c.json({ error: '10秒以内にリクエストが送信されました。しばらくお待ちください。' }, 429);
+  }
+
+  // Update last request time
+  lastRequestTime = currentTime;
+
+  // Get the query from the request body
+  const { query } = await c.req.json();
+
+  // Validate that query is present
+  if (!query) {
+    return c.json({ error: 'クエリが指定されていません。' }, 400);
+  }
+
+  try {
+    const chatGptResponse: any = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${openAiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: 'user',
+            content: query,
+          }
+        ],
+      }),
+    });
+
+    if (!chatGptResponse.ok) {
+      return c.json({ error: 'OpenAI APIリクエストに失敗しました。' }, chatGptResponse.status);
+    }
+
+    const chatData: any = await chatGptResponse.json();
+
+    return c.json({ message: chatData.choices[0].message.content });
+  } catch (error) {
+    return c.json({ error: 'エラーが発生しました。再試行してください。' }, 500);
+  }
 });
 
 export default app;
