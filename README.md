@@ -1,8 +1,8 @@
+develop(loalhost)
 ```
-npm install
-npm run dev
+wrangker dev
 ```
-
+deploy(cloudflare wokers)
 ```
-npm run deploy
+wrangler deploy
 ```
